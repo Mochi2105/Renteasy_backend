@@ -1,6 +1,6 @@
 from models.user import User, UserLogin
 from database.mongo import db
-from fastapi import HTTPException
+from fastapi import HTTPException, Response, status
 from settings.keys import secret_key
 import bcrypt
 import jwt
@@ -23,29 +23,75 @@ def create_user(user: User):
         raise HTTPException(status_code=500, detail="Error inserting user into the database")
     return {"message": "User created correctly"}
 
-def login_user(user: UserLogin):
-    data_user = user.model_dump() #viene del postman
-    result_exist = db_user.find_one({'email':data_user['email']})
-    if not result_exist:
-        raise HTTPException(status_code=403, detail="Invalid email or password")
+def login_user(user_login: UserLogin, response: Response):
+    try:
+        user_data = db_user.find_one({"email": user_login.email})
 
- # Chequear el password con el metodo bcrypt
-    user_password = data_user['password'] #password from the request (without encryption)
-    db_user_password = result_exist['password'] #password from the database (with encryption)
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User or password incorrect",
+            )
 
-    check_password = bcrypt.checkpw(password=user_password.encode('utf-8'),hashed_password= db_user_password.encode('utf-8'))
-    if not check_password:
-        raise HTTPException(status_code=403, detail="Invalid email or password")
+        user_data["_id"] = str(user_data["_id"])
 
-    data_token = {
-        "email": result_exist['email'],
-        "first_name": result_exist['first_name'],
-        "last_name": result_exist['last_name']
-    }
-    token = jwt.encode(data_token, secret_key, algorithm='HS256')
+        check = bcrypt.checkpw(
+            password= user_login.password.encode("utf8"),
+            hashed_password=user_data["password"].encode("utf8")
+        )
 
-    return {"message": "Login successful", "token": token}
+        if not check:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User or password incorrect",
+            )
 
+        payload = {
+            "_id": user_data["_id"],
+            "email": user_data["email"],
+            "firstname": user_data["firstname"],
+            "lastname": user_data["lastname"],
+            "profile_picture": user_data.get("profile_picture", ""),
+            "role": user_data["role"],
+            "favorite_flats": user_data.get("favorite_flats", [])
+        }
 
+        encoded_jwt = jwt.encode(payload, "secret", algorithm="HS256")
 
+        response.set_cookie(
+            key="access_token",
+            value=f"Bearer {encoded_jwt}",
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            expires=604800,
+            path="/"
+        )
 
+        return {
+            "message": f"Welcome {user_data['firstname']} {user_data['lastname']}",
+            "user": payload
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal Server Error: {e}"
+        )
+
+def logout_user(response: Response):
+    try:
+       response.delete_cookie(
+           key="access_token",
+           httponly=True,
+           samesite="lax",
+           secure=False,
+           path="/"
+       )
+       return {"message": "User logged out"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal Server Error: {e}"
+        )
